@@ -3,38 +3,22 @@ import time
 from collections import deque
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Konstanta / tuning
-# ─────────────────────────────────────────────────────────────────────────────
+# Tuning
 GATE_DIST         = 1.5   # meter — radius maksimum asosiasi
 LOST_TIMEOUT      = 10    # frame — toleransi hilang sebelum track di-free
-MIN_DIST_NEW      = 0.05  # meter — minimum distance deteksi valid (filter 0,0,0)
+MIN_DIST_NEW      = 0.05  # meter — minimum distance deteksi valid
 HISTORY_LEN       = 8     # frame — panjang riwayat posisi untuk heading
-
 ALPHA             = 0.5   # bobot jarak dalam cost gabungan
 BETA              = 0.3   # bobot heading error
 GAMMA             = 0.2   # bobot momentum X (gerak horizontal)
-# ALPHA + BETA + GAMMA = 1.0
-
 GHOST_DIST        = 0.5   # meter — dua deteksi dalam radius ini = ghost dari orang sama
-                           # Perkecil (mis. 0.3) jika 2 orang nyata sering berjarak dekat
 MERGE_DIST        = 0.3   # meter — dua track dalam radius ini → coasting mode
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper geometri
-# ─────────────────────────────────────────────────────────────────────────────
 def _euclidean(a, b):
-    """Jarak Euclidean 2D (meter)."""
     return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
 
 
 def _heading_vector(history):
-    """
-    Hitung heading unit vector dari riwayat posisi.
-    Rata-rata displacement antar frame → lebih tahan noise sesaat.
-    Returns (hx, hy) unit vector, atau (0,0) jika belum cukup data.
-    """
     if len(history) < 2:
         return (0.0, 0.0)
 
@@ -51,11 +35,6 @@ def _heading_vector(history):
 
 
 def _heading_error(hv, from_pos, to_pos):
-    """
-    Seberapa berlawanan arah deteksi dibanding heading track.
-    Returns 0.0 (searah) s.d. 1.0 (berlawanan).
-    Jika heading belum ada → return 0.0 (tidak ada penalti).
-    """
     if hv == (0.0, 0.0):
         return 0.0
 
@@ -71,12 +50,6 @@ def _heading_error(hv, from_pos, to_pos):
 
 
 def _x_momentum_error(history, det_posx):
-    """
-    Penalti jika deteksi berlawanan dengan momentum horizontal (X) track.
-    Kunci untuk skenario dua orang berpapasan di garis horizontal.
-
-    Returns 0.0 (searah) s.d. 1.0 (berlawanan arah X).
-    """
     if len(history) < 2:
         return 0.0
 
@@ -85,24 +58,20 @@ def _x_momentum_error(history, det_posx):
                     for i in range(1, len(positions)))
     dx_avg    = dx_total / (len(positions) - 1)
 
-    # Threshold: target hampir diam di X → tidak ada penalti
-    # Satuan: mm (koordinat radar dalam mm)
-    if abs(dx_avg) < 5.0:   # < 5 mm/frame dianggap diam
+    if abs(dx_avg) < 5.0:
         return 0.0
 
     dx_to_det = det_posx - positions[-1][0]
 
     if dx_avg * dx_to_det >= 0:
-        return 0.0  # searah → tidak ada penalti
+        return 0.0
     else:
-        # Berlawanan → penalti proporsional, normalisasi terhadap gate (dalam mm)
         gate_mm   = GATE_DIST * 1000.0
         magnitude = min(abs(dx_to_det) / (gate_mm + 1e-6), 1.0)
         return magnitude
 
 
 def _is_valid(det):
-    """Deteksi valid = bukan (0,0,0) dan distance > MIN_DIST_NEW."""
     return not (det['posx'] == 0.0 and
                 det['posy'] == 0.0 and
                 det['distance'] == 0.0) \
@@ -110,25 +79,9 @@ def _is_valid(det):
 
 
 def _deduplicate(detections):
-    """
-    Buang ghost detection — pantulan multipath dari 1 orang yang muncul
-    di beberapa slot radar sekaligus.
-
-    Ini adalah PENYEBAB UTAMA 1 orang terdeteksi sebagai 2-3 target.
-
-    Logika:
-      - Urutkan dari distance terkecil (deteksi LOS paling akurat duluan)
-      - Jika dua deteksi berjarak XY < GHOST_DIST → ghost, buang yang lebih jauh
-      - Pertahankan hanya deteksi yang tidak berdekatan satu sama lain
-
-    Catatan tuning:
-      - Perkecil GHOST_DIST jika 2 orang nyata yang berdekatan ikut terbuang
-      - Perbesar GHOST_DIST jika ghost masih lolos
-    """
     if len(detections) <= 1:
         return detections
 
-    # Urutkan distance terkecil dulu (LOS > multipath)
     sorted_dets = sorted(detections, key=lambda d: d['distance'])
 
     kept = []
@@ -144,26 +97,14 @@ def _deduplicate(detections):
     return kept
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Track — satu slot target
-# ─────────────────────────────────────────────────────────────────────────────
 class Track:
-    """
-    Satu slot target dengan riwayat posisi untuk trajectory-aware association.
-
-    Atribut:
-        history   : deque (x,y) N frame terakhir
-        heading   : unit vector arah gerak
-        predicted : prediksi posisi frame berikutnya (ekstrapolasi linear)
-    """
-
     def __init__(self, tid):
         self.tid         = tid
         self.posx        = 0.0
         self.posy        = 0.0
         self.distance    = 0.0
         self.velocity    = 0.0
-        self.status      = 'FREE'    # 'FREE' | 'ACTIVE' | 'LOST'
+        self.status      = 'FREE'
         self.lost_frames = 0
         self.last_seen   = None
 
@@ -176,7 +117,6 @@ class Track:
         return (self.posx, self.posy)
 
     def assign(self, det, velocity=0.0):
-        """Update track dengan deteksi baru → perbarui heading & prediksi."""
         self.posx        = det['posx']
         self.posy        = det['posy']
         self.distance    = det['distance']
@@ -190,7 +130,6 @@ class Track:
         self._update_predicted()
 
     def _update_predicted(self):
-        """Prediksi posisi = posisi kini + displacement rata-rata terakhir."""
         if len(self.history) < 2:
             self.predicted = self.pos
             return
@@ -200,14 +139,12 @@ class Track:
         self.predicted = (self.posx + dx, self.posy + dy)
 
     def mark_lost(self):
-        """Target tidak terdeteksi frame ini — pertahankan & ekstrapolasi prediksi."""
         self.lost_frames += 1
         if self.lost_frames > LOST_TIMEOUT:
             self.status = 'FREE'
             self._reset()
         else:
             self.status = 'LOST'
-            # Lanjutkan ekstrapolasi posisi selama LOST
             if self.predicted is not None:
                 hx, hy = self.heading
                 self.predicted = (self.predicted[0] + hx,
@@ -233,24 +170,7 @@ class Track:
         }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DataAssociator — mesin utama
-# ─────────────────────────────────────────────────────────────────────────────
 class DataAssociator:
-    """
-    Asosiasi deteksi radar ke track T1/T2/T3 secara konsisten.
-
-    Alur tiap frame:
-        1. Filter valid    — buang slot (0,0,0) dan distance < MIN_DIST_NEW
-        2. Deduplicate     — buang ghost/multipath (1 orang muncul di banyak slot)
-        3. Cost matrix     — hitung cost gabungan: jarak + heading + momentum X
-        4. Greedy match    — pasangkan track ↔ deteksi dari cost terkecil
-        5. Mark lost       — track tanpa pasangan → LOST / FREE
-        6. New track       — deteksi sisa → slot FREE by-order
-        7. Merge zone      — dua track terlalu dekat → coasting dari prediksi
-        8. Update & output
-    """
-
     def __init__(self):
         self.tracks = {
             't1': Track('t1'),
@@ -260,27 +180,8 @@ class DataAssociator:
         self._prev_pos = {'t1': None, 't2': None, 't3': None}
 
     def update(self, raw_detections, dt=0.0):
-        """
-        Proses satu frame.
-
-        Parameters
-        ----------
-        raw_detections : list of dict  [{posx, posy, distance}, ×3]
-        dt             : float — delta-t detik
-
-        Returns
-        -------
-        dict {t1,t2,t3} → {posx, posy, distance, velocity}
-        """
-
-        # ── 1. Filter valid ───────────────────────────────────────────────
         valid_dets = [d for d in raw_detections if _is_valid(d)]
-
-        # ── 2. Deduplicate (buang ghost) ──────────────────────────────────
-        # Ini menangani masalah: 1 orang muncul di T1, T2, T3 sekaligus
         valid_dets = _deduplicate(valid_dets)
-
-        # ── 3 & 4. Cost matrix + Greedy matching ──────────────────────────
         matchable      = [tid for tid, tr in self.tracks.items()
                           if tr.status in ('ACTIVE', 'LOST')]
         matched_tracks = {}
@@ -315,12 +216,9 @@ class DataAssociator:
                 used_tracks.add(tid)
                 used_dets.add(di)
 
-        # ── 5. Mark lost ──────────────────────────────────────────────────
         for tid in matchable:
             if tid not in matched_tracks:
                 self.tracks[tid].mark_lost()
-
-        # ── 6. Deteksi sisa → slot FREE by-order ─────────────────────────
         unmatched_dets = [det for di, det in enumerate(valid_dets)
                           if di not in matched_dets]
         free_slots     = [tid for tid, tr in self.tracks.items()
@@ -328,17 +226,10 @@ class DataAssociator:
         for det, tid in zip(unmatched_dets, free_slots):
             matched_tracks[tid] = det
 
-        # ── 7. Merge zone coasting ────────────────────────────────────────
-        # Cek SEBELUM update: gunakan posisi KINI (sebelum assign baru)
-        # Jika dua track yang akan diupdate saling berdekatan → pakai prediksi
         self._handle_merge_zone(matched_tracks)
-
-        # ── 8. Update track ───────────────────────────────────────────────
         for tid, det in matched_tracks.items():
             vel = self._calc_velocity(tid, det, dt)
             self.tracks[tid].assign(det, velocity=vel)
-
-        # ── Output ────────────────────────────────────────────────────────
         output = {}
         for tid, tr in self.tracks.items():
             if tr.status == 'FREE':
@@ -351,9 +242,7 @@ class DataAssociator:
 
         return output
 
-    # ── Private ───────────────────────────────────────────────────────────────
     def _calc_velocity(self, tid, det, dt):
-        """Hitung kecepatan dari selisih posisi XY (mm → m/s)."""
         if self._prev_pos[tid] is None or dt <= 0:
             self._prev_pos[tid] = (det['posx'], det['posy'])
             return 0.0
@@ -364,14 +253,6 @@ class DataAssociator:
         return max(vel, 0.0)
 
     def _handle_merge_zone(self, matched_tracks):
-        """
-        Saat dua track yang akan diupdate saling berdekatan (< MERGE_DIST),
-        radar tidak bisa membedakan keduanya → gunakan prediksi momentum
-        masing-masing (coasting) agar identitas tidak tertukar.
-
-        Pengecekan dilakukan pada posisi KINI (sebelum assign),
-        bukan setelah, agar tidak terlambat mendeteksi overlap.
-        """
         tids_to_update = list(matched_tracks.keys())
 
         for i in range(len(tids_to_update)):
@@ -379,12 +260,10 @@ class DataAssociator:
                 tid_a = tids_to_update[i]
                 tid_b = tids_to_update[j]
 
-                # Posisi deteksi yang akan di-assign ke masing-masing track
                 pos_a = (matched_tracks[tid_a]['posx'], matched_tracks[tid_a]['posy'])
                 pos_b = (matched_tracks[tid_b]['posx'], matched_tracks[tid_b]['posy'])
 
                 if _euclidean(pos_a, pos_b) < MERGE_DIST:
-                    # Override dengan prediksi momentum masing-masing
                     tr_a = self.tracks[tid_a]
                     tr_b = self.tracks[tid_b]
 
@@ -402,14 +281,12 @@ class DataAssociator:
                         }
 
     def reset(self):
-        """Reset semua track."""
         for tr in self.tracks.values():
             tr.status = 'FREE'
             tr._reset()
         self._prev_pos = {'t1': None, 't2': None, 't3': None}
 
     def get_status(self):
-        """Debug — status, heading, dan prediksi tiap track."""
         return {
             tid: {
                 'status'   : tr.status,
