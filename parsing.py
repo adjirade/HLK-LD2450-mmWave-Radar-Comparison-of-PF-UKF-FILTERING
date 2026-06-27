@@ -5,11 +5,13 @@ import math
 from calibration_system import CalibrationManager
 from data_association import DataAssociator
 
-# Parameter Awal
 BAUD_RATE   = 115200
 TIMEOUT     = 0.1
 DIST_OFFSET = 0
 VEL_OFFSET  = 0
+
+USE_DATA_ASSOCIATION = False
+USE_CALIBRATION      = False
 
 def find_esp32_port():
     ports = serial.tools.list_ports.comports()
@@ -18,7 +20,6 @@ def find_esp32_port():
             return port.device
     return None
 
-# Mengambil Model Kalibrasi
 calib_manager = CalibrationManager()
 try:
     calib_manager.load('calibration_models.pkl')
@@ -26,28 +27,51 @@ try:
 except:
     print("Model Kalibrasi Tidak Ada")
 
-# Asosiasi Data
 associator = DataAssociator()
 
+def toggle_data_association():
+    global USE_DATA_ASSOCIATION
+    USE_DATA_ASSOCIATION = not USE_DATA_ASSOCIATION
+    status = "ON" if USE_DATA_ASSOCIATION else "OFF"
+    print(f"\n[TOGGLE] Data Association: {status}")
+    return USE_DATA_ASSOCIATION
 
-# Parsing Data
+def toggle_calibration():
+    global USE_CALIBRATION
+    USE_CALIBRATION = not USE_CALIBRATION
+    status = "ON" if USE_CALIBRATION else "OFF"
+    print(f"[TOGGLE] Calibration: {status}")
+    return USE_CALIBRATION
+
+def get_flags():
+    return USE_DATA_ASSOCIATION, USE_CALIBRATION
+
 def parse_radar_frame(frame):
     try:
         values = [float(x) for x in frame.strip().split(',')]
-        if len(values) != 9:
+        if len(values) != 6:
             return None
 
-        detections = [
-            {'posx': values[0], 'posy': values[1], 'distance': values[2]},
-            {'posx': values[3], 'posy': values[4], 'distance': values[5]},
-            {'posx': values[6], 'posy': values[7], 'distance': values[8]},
-        ]
+        detections = []
+        for i in range(3):
+            x = values[i * 2]
+            y = values[i * 2 + 1]
+            
+            if x == 0 and y == 0:
+                dist = 0.0
+            else:
+                dist = math.sqrt(x**2 + y**2)
+            
+            detections.append({
+                'posx': x,
+                'posy': y,
+                'distance': max(0.0, dist)
+            })
+        
         return detections
     except ValueError:
         return None
 
-
-# Fungsi Utama
 def read_radar_data():
     port = find_esp32_port()
     if port is None:
@@ -59,6 +83,7 @@ def read_radar_data():
     time.sleep(2)
 
     prev_time = None
+    prev_pos = {'t1': None, 't2': None, 't3': None}
 
     while True:
         if ser.in_waiting:
@@ -70,10 +95,27 @@ def read_radar_data():
                 dt   = 0.0 if prev_time is None else now - prev_time
                 prev_time = now
 
+                if USE_DATA_ASSOCIATION:
+                    associated = associator.update(detections, dt)
+                else:
+                    associated = {}
+                    for i, t in enumerate(['t1', 't2', 't3']):
+                        det = detections[i]
+                        
+                        if prev_pos[t] is not None and dt > 0:
+                            dx = det['posx'] - prev_pos[t]['posx']
+                            dy = det['posy'] - prev_pos[t]['posy']
+                            distance_mm = math.sqrt(dx**2 + dy**2)
+                            velocity = distance_mm / dt / 1000.0
+                        else:
+                            velocity = 0.0
+                        
+                        associated[t] = {
+                            'distance': det['distance'] / 1000.0,
+                            'velocity': max(velocity, 0.0)
+                        }
+                        prev_pos[t] = {'posx': det['posx'], 'posy': det['posy']}
 
-                associated = associator.update(detections, dt)
-
-                # Tahap Kalibrasi
                 output = {}
                 for t in ['t1', 't2', 't3']:
                     dist_raw = associated[t]['distance']
@@ -83,10 +125,13 @@ def read_radar_data():
                         output[t] = {'distance': 0.0, 'velocity': 0.0}
                         continue
 
-                    dist_cal, vel_cal = calib_manager.apply_calibration(dist_raw, vel_raw)
-
-                    dist_cal += DIST_OFFSET
-                    vel_cal  += VEL_OFFSET
+                    if USE_CALIBRATION:
+                        dist_cal, vel_cal = calib_manager.apply_calibration(dist_raw, vel_raw)
+                        dist_cal += DIST_OFFSET
+                        vel_cal  += VEL_OFFSET
+                    else:
+                        dist_cal = dist_raw
+                        vel_cal  = vel_raw
 
                     dist_cal = max(dist_cal, 0.0)
                     vel_cal  = max(vel_cal,  0.0)

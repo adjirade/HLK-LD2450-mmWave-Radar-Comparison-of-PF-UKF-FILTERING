@@ -5,21 +5,45 @@ import matplotlib.pyplot as plt
 import time
 import numpy as np
 import threading
-from parsing import read_radar_data
+from parsing import read_radar_data, toggle_data_association, toggle_calibration, get_flags
 from ukf import UKF
 from pf import ParticleFilter
 from metrics import Metrics
 from viz import RadarVisualizer
+from mode_selector import select_mode_gui
+
+selected_mode = select_mode_gui()
+
+print(f"\n{'='*70}")
+print(f"✅ Mode Selected: {selected_mode}")
+if selected_mode == 'FULL':
+    print("   → Excel output: Complete data (distance + velocity)")
+elif selected_mode == 'DISTANCE':
+    print("   → Excel output: Distance")
+elif selected_mode == 'VELOCITY':
+    print("   → Excel output: Velocity")
+print(f"{'='*70}\n")
+print("Starting system...\n")
 
 targets = ['t1', 't2', 't3']
 
 metrics = Metrics()
-viz     = RadarVisualizer(metrics, max_points=100)
+
+viz = RadarVisualizer(metrics, max_points=100, display_mode=selected_mode)
 
 radar_gen = read_radar_data()
 
 ukfs = {t: UKF([0.0, 0.0]) for t in targets}
 pfs  = {t: ParticleFilter([0.0, 0.0]) for t in targets}
+
+def on_key_press(event):
+    if event.key == 'd' or event.key == 'D':
+        toggle_data_association()
+    elif event.key == 'c' or event.key == 'C':
+        toggle_calibration()
+    elif event.key == 'i' or event.key == 'I':
+        use_da, use_cal = get_flags()
+        display_mode = viz.get_display_mode()
 
 def data_loop():
     dt_prev = time.time()
@@ -43,7 +67,6 @@ def data_loop():
                     vel_ukf[t]  = 0.0
                     dist_pf[t]  = 0.0
                     vel_pf[t]   = 0.0
-                    # Fungsi Reset
                     if ukfs[t].state[0] != 0.0 or ukfs[t].state[1] != 0.0:
                         ukfs[t].reset([0.0, 0.0])
                         pfs[t].reset([0.0, 0.0])
@@ -54,11 +77,13 @@ def data_loop():
 
                 ukfs[t].predict(dt)
                 est_ukf = ukfs[t].update(z)
-                dist_ukf[t], vel_ukf[t] = est_ukf
+                dist_ukf[t] = max(est_ukf[0], 0.0)
+                vel_ukf[t] = max(est_ukf[1], 0.0)
 
                 pfs[t].predict(dt)
                 est_pf = pfs[t].update(np.array(z))
-                dist_pf[t], vel_pf[t] = est_pf
+                dist_pf[t] = max(est_pf[0], 0.0)
+                vel_pf[t] = max(est_pf[1], 0.0)
 
                 metrics.update(
                     t,
@@ -74,8 +99,22 @@ def data_loop():
         print(f"\n[ERROR data_loop] {e}")
         traceback.print_exc()
 
+viz.fig.canvas.mpl_connect('key_press_event', on_key_press)
+
 thread = threading.Thread(target=data_loop, daemon=True)
 thread.start()
+
+
+print("  [Q] Quit & Save to Excel")
+print("="*70)
+print(f"\n📊 Active Mode: {selected_mode}")
+if selected_mode == 'FULL':
+    print("   → Excel output: Complete data (distance + velocity)")
+elif selected_mode == 'DISTANCE':
+    print("   → Excel output: Distance")
+elif selected_mode == 'VELOCITY':
+    print("   → Excel output: Velocity")
+print("="*70 + "\n")
 
 try:
     plt.show()

@@ -37,6 +37,13 @@ class Logger:
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"logs/radar_log_{timestamp}.xlsx"
+        
+        # Buat folder logs jika belum ada
+        import os
+        log_dir = os.path.dirname(filename)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        
         df = pd.DataFrame(self.data)
         df.to_excel(filename, index=False)
         print(f"[Logger] Data Disimpan di {filename}")

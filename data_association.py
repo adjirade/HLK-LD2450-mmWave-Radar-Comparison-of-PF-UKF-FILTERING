@@ -165,7 +165,7 @@ class Track:
         return {
             'posx'    : self.posx,
             'posy'    : self.posy,
-            'distance': self.distance,
+            'distance': self.distance / 1000.0,  # Konversi mm → m
             'velocity': self.velocity,
         }
 
