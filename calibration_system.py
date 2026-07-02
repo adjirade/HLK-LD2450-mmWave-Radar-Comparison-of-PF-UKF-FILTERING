@@ -269,15 +269,33 @@ class CalibrationManager:
 
 # Mengambil data dari sensor
 def parse_radar_frame(frame):
+    """
+    Parse frame serial - HANYA koordinat X dan Y.
+    Format input: x1,y1,x2,y2,x3,y3 (6 nilai)
+    Distance dihitung dari Pythagoras: √(x² + y²)
+    """
     try:
         values = [float(x) for x in frame.strip().split(',')]
-        if len(values) != 9:
+        if len(values) != 6:
             return None
-        targets = {
-            't1': {'posx': values[0], 'posy': values[1], 'distance': values[2]},
-            't2': {'posx': values[3], 'posy': values[4], 'distance': values[5]},
-            't3': {'posx': values[6], 'posy': values[7], 'distance': values[8]},
-        }
+        
+        targets = {}
+        for i, target_name in enumerate(['t1', 't2', 't3']):
+            x = values[i * 2]
+            y = values[i * 2 + 1]
+            
+            # Hitung distance dari koordinat (format baru)
+            if x == 0 and y == 0:
+                distance = 0.0
+            else:
+                distance = math.sqrt(x**2 + y**2)
+            
+            targets[target_name] = {
+                'posx': x,
+                'posy': y,
+                'distance': max(0.0, distance)  # mm, selalu >= 0
+            }
+        
         return targets
     except ValueError:
         return None
