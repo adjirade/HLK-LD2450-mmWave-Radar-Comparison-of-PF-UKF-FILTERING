@@ -58,10 +58,10 @@ Tujuan akhir dari Tugas Akhir ini adalah **membandingkan performa UKF vs PF** da
 ## 🏗 Arsitektur & Alur Data
 
 ```
-┌─────────────────┐   UART (256000 bps)   ┌───────────────┐   USB Serial (115200 bps)   ┌─────────────────────┐
-│   HLK-LD2450     │ ───────────────────►  │     ESP32     │ ───────────────────────────► │   Laptop / PC        │
-│  (mmWave radar)  │   protokol biner      │ (firmware .ino)│   teks: "x1,y1,x2,y2,x3,y3"  │  (Python)            │
-└─────────────────┘   pabrik LD2450       └───────────────┘   1 baris per frame           └─────────────────────┘
+┌─────────────────┐   UART (256000 bps)   ┌────────────────┐   USB Serial (115200 bps)    ┌─────────────────────┐
+│   HLK-LD2450    │ ───────────────────►  │     ESP32      │ ───────────────────────────► │   Laptop / PC       │
+│  (mmWave radar) │   protokol biner      │ (firmware .ino)│   teks: "x1,y1,x2,y2,x3,y3"  │  (Python)           │
+└─────────────────┘   pabrik LD2450       └────────────────┘   1 baris per frame          └─────────────────────┘
 ```
 
 Di sisi laptop (`main.py` sebagai entry point), alur pemrosesan per frame adalah:
@@ -184,13 +184,6 @@ Artinya: Target 1 terdeteksi di x=520mm, y=1830mm. Target 2 dan 3 tidak terdetek
 
 Baris ini kemudian dibaca dan diparsing di laptop oleh `parse_radar_frame()` pada **dua file berbeda** dengan format ekspektasi berbeda — **penting untuk dipahami saat development**:
 
-| File | Fungsi | Ekspektasi jumlah nilai | Dipakai untuk |
-|---|---|---|---|
-| `parsing.py` | `parse_radar_frame(frame)` | **6 nilai** `x1,y1,x2,y2,x3,y3` | Live tracking utama (dipakai `main.py`) — cocok dengan output firmware ESP32 saat ini |
-| `calibration_system.py` | `parse_radar_frame(frame)` | **9 nilai** `x1,y1,d1,x2,y2,d2,x3,y3,d3` | Skrip kalibrasi (`calibration_quick_test.py`, `run_distance_calibration_interactive`, dll) |
-
-> ⚠️ **PERHATIAN UNTUK PENGEMBANGAN**: kedua fungsi `parse_radar_frame` ini **tidak identik** dan **tidak kompatibel** satu sama lain karena mengharapkan jumlah kolom serial yang berbeda (6 vs 9). Firmware `.ino` saat ini hanya mengirim **6 nilai** (tanpa kolom distance terpisah). Ini artinya skrip kalibrasi (`calibration_system.py`, `calibration_quick_test.py`) **mengasumsikan firmware versi lama/berbeda** yang mengirim jarak (`distance`) langsung dari ESP32, sementara firmware `.ino` yang ada di repo ini **tidak** mengirim kolom distance. **Sebelum menjalankan kalibrasi, cek dulu apakah firmware ESP32 di device kamu mengirim 6 atau 9 kolom**, dan sesuaikan salah satu sisi (firmware atau skrip kalibrasi) agar konsisten. Ini adalah salah satu titik yang perlu diperbaiki/diselaraskan oleh pengembang selanjutnya (lihat [Keterbatasan & Ide Pengembangan](#-keterbatasan--ide-pengembangan-lanjutan)).
-
 Di `parsing.py`, setelah 6 nilai berhasil diparsing, jarak dihitung ulang secara manual di laptop:
 ```python
 dist = math.sqrt(x**2 + y**2)   # dalam mm
@@ -209,8 +202,8 @@ dist = math.sqrt(x**2 + y**2)   # dalam mm
 ### 2. Clone repository
 
 ```bash
-git clone <URL_REPO_INI>
-cd <nama-folder-repo>
+git clone https://github.com/adjirade/HLK-LD2450-mmWave-Radar-Comparison-of-PF-UKF-FILTERING
+cd HLK-LD2450-mmWave-Radar-Comparison-of-PF-UKF-FILTERING
 ```
 
 ### 3. Buat virtual environment (opsional tapi sangat disarankan)
@@ -317,8 +310,6 @@ Kalibrasi bersifat **opsional** — tanpa kalibrasi, sistem tetap berjalan mengg
 
 ### Langkah menjalankan kalibrasi jarak & kecepatan
 
-> ⚠️ Sebelum lanjut, baca ulang [peringatan format 6 vs 9 kolom](#-format-data-esp32--laptop) di atas — `calibration_system.py` mengekspektasikan 9 kolom data serial (termasuk kolom distance eksplisit per target), sedangkan firmware `.ino` di repo ini hanya mengirim 6 kolom. **Selaraskan dulu** salah satu sisi sebelum kalibrasi dijalankan, kalau tidak, `parse_radar_frame()` di `calibration_system.py` akan selalu mengembalikan `None` dan tidak ada sampel yang bisa dikumpulkan.
-
 1. Edit `SERIAL_PORT` di bagian atas `calibration_system.py` sesuai COM port ESP32 kamu.
 2. Jalankan:
    ```bash
@@ -419,7 +410,6 @@ Algoritma tracking multi-target yang menjaga **konsistensi ID** (t1/t2/t3) antar
 - `CalibrationManager` — orkestrasi keseluruhan: `calibrate()` (training), `apply_calibration()` (dipakai saat runtime), `save()`/`load()` (persist ke `.pkl`).
 - `run_distance_calibration_interactive()` / `run_velocity_calibration_interactive()` — wizard interaktif via terminal untuk mengumpulkan sampel kalibrasi (lihat [Kalibrasi Sensor](#-kalibrasi-sensor)).
 - `main_calibration()` — fungsi utama yang dijalankan saat file ini dieksekusi langsung (`python calibration_system.py`).
-- ⚠️ Berisi definisi `parse_radar_frame()` versi **9 kolom** (lihat peringatan format di atas) — berbeda dari versi di `parsing.py`.
 
 #### `calibration_quick_test.py`
 Skrip verifikasi cepat: load `calibration_models.pkl`, baca serial selama N detik (default 10), tampilkan perbandingan raw vs calibrated distance secara live plus ringkasan statistik di akhir.
@@ -564,16 +554,15 @@ Berikut parameter-parameter kunci yang paling sering perlu di-tuning saat pengem
 
 Bagian ini khusus ditulis untuk **adik tingkat yang akan melanjutkan proyek ini**:
 
-1. **Mismatch format parsing 6 vs 9 kolom** — `parsing.py` dan `calibration_system.py` punya definisi `parse_radar_frame()` berbeda (lihat [Format Data ESP32 → Laptop](#-format-data-esp32--laptop)). Sebaiknya disatukan jadi 1 modul parsing yang dipakai bersama (`import` dari satu sumber), dan pastikan firmware `.ino` konsisten dengan format yang diharapkan seluruh skrip Python.
-2. **Hotkey `I` (Info) belum berfungsi** — di `main.py`, handler `on_key_press` untuk tombol `I` hanya memanggil `get_flags()` dan `viz.get_display_mode()` tanpa menampilkan apa pun ke user. Bisa dikembangkan jadi overlay info tambahan (misal jumlah track aktif, FPS, dsb).
-3. **`SERIAL_PORT` hardcoded** di `calibration_system.py` (`'COM5'`) dan `calibration_quick_test.py` — sebaiknya diganti memakai `find_esp32_port()` dari `parsing.py` agar konsisten dengan `main.py` yang sudah auto-detect.
-4. **Data association memakai posisi (mm) tapi `GATE_DIST`/`GHOST_DIST`/`MERGE_DIST` didefinisikan dalam meter** — perhatikan satuan saat membaca kode: posisi `posx`/`posy` di `data_association.py` berasal dari koordinat mentah ESP32 yang **belum dikonversi ke meter** (masih mm), sementara nilai gate seperti `GATE_DIST = 1.5` ditulis dengan komentar "meter". Cek ulang konsistensi satuan ini — ini titik rawan bug ketika tuning ulang parameter.
-5. **Velocity dihitung dari selisih posisi antar-frame**, bukan dari data speed bawaan sensor LD2450 (yang sebenarnya tersedia di protokol biner tapi tidak dipakai/dibaca firmware). Membaca & memakai speed bawaan sensor bisa jadi eksperimen tambahan menarik untuk dibandingkan dengan pendekatan saat ini.
-6. **Data association pakai greedy matching**, bukan optimal assignment (Hungarian Algorithm) — untuk skenario dengan banyak target berpapasan, algoritma Hungarian (`scipy.optimize.linear_sum_assignment`) berpotensi memberikan hasil asosiasi yang lebih stabil.
-7. **Metrik (RMSE/MAE/MBE) dihitung terhadap data mentah radar**, bukan ground truth fisik independen — untuk laporan Tugas Akhir yang lebih kuat secara metodologis, pertimbangkan sesi pengujian terpisah dengan ground truth independen (meteran/marker/motion capture) untuk validasi akurasi absolut UKF vs PF.
-8. **Belum ada file `requirements.txt`** resmi di repo — pertimbangkan menambahkannya (isi sudah dijabarkan di bagian [Instalasi Software](#-instalasi-software)) agar `pip install -r requirements.txt` langsung jalan.
-9. **Noise pengukuran PF (`meas_std_dist/vel=0.005`) sangat kecil** dibanding noise pengukuran UKF (`r_dist/vel=0.8`) — kedua filter memakai skala noise yang jauh berbeda secara default, sehingga perbandingan performa UKF vs PF di laporan TA sebaiknya menyertakan justifikasi/eksperimen sensitivitas terhadap parameter noise ini agar perbandingan adil (apple-to-apple).
-10. **Belum ada automated test** untuk modul-modul inti (`ukf.py`, `pf.py`, `data_association.py`, parsing). Menambahkan unit test (`pytest`) dengan data sintetis akan sangat membantu saat refactor ke depannya.
+1. **Hotkey `I` (Info) belum berfungsi** — di `main.py`, handler `on_key_press` untuk tombol `I` hanya memanggil `get_flags()` dan `viz.get_display_mode()` tanpa menampilkan apa pun ke user. Bisa dikembangkan jadi overlay info tambahan (misal jumlah track aktif, FPS, dsb).
+2. **`SERIAL_PORT` hardcoded** di `calibration_system.py` (`'COM5'`) dan `calibration_quick_test.py` — sebaiknya diganti memakai `find_esp32_port()` dari `parsing.py` agar konsisten dengan `main.py` yang sudah auto-detect.
+3. **Data association memakai posisi (mm) tapi `GATE_DIST`/`GHOST_DIST`/`MERGE_DIST` didefinisikan dalam meter** — perhatikan satuan saat membaca kode: posisi `posx`/`posy` di `data_association.py` berasal dari koordinat mentah ESP32 yang **belum dikonversi ke meter** (masih mm), sementara nilai gate seperti `GATE_DIST = 1.5` ditulis dengan komentar "meter". Cek ulang konsistensi satuan ini — ini titik rawan bug ketika tuning ulang parameter.
+4. **Velocity dihitung dari selisih posisi antar-frame**, bukan dari data speed bawaan sensor LD2450 (yang sebenarnya tersedia di protokol biner tapi tidak dipakai/dibaca firmware). Membaca & memakai speed bawaan sensor bisa jadi eksperimen tambahan menarik untuk dibandingkan dengan pendekatan saat ini.
+5. **Data association pakai greedy matching**, bukan optimal assignment (Hungarian Algorithm) — untuk skenario dengan banyak target berpapasan, algoritma Hungarian (`scipy.optimize.linear_sum_assignment`) berpotensi memberikan hasil asosiasi yang lebih stabil.
+6. **Metrik (RMSE/MAE/MBE) dihitung terhadap data mentah radar**, bukan ground truth fisik independen — untuk laporan Tugas Akhir yang lebih kuat secara metodologis, pertimbangkan sesi pengujian terpisah dengan ground truth independen (meteran/marker/motion capture) untuk validasi akurasi absolut UKF vs PF.
+7. **Belum ada file `requirements.txt`** resmi di repo — pertimbangkan menambahkannya (isi sudah dijabarkan di bagian [Instalasi Software](#-instalasi-software)) agar `pip install -r requirements.txt` langsung jalan.
+8. **Noise pengukuran PF (`meas_std_dist/vel=0.005`) sangat kecil** dibanding noise pengukuran UKF (`r_dist/vel=0.8`) — kedua filter memakai skala noise yang jauh berbeda secara default, sehingga perbandingan performa UKF vs PF di laporan TA sebaiknya menyertakan justifikasi/eksperimen sensitivitas terhadap parameter noise ini agar perbandingan adil (apple-to-apple).
+9. **Belum ada automated test** untuk modul-modul inti (`ukf.py`, `pf.py`, `data_association.py`, parsing). Menambahkan unit test (`pytest`) dengan data sintetis akan sangat membantu saat refactor ke depannya.
 
 ---
 
